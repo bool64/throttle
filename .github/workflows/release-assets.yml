@@ -1,0 +1,58 @@
+# This script is provided by github.com/bool64/dev.
+
+# This script uploads application binaries as GitHub release assets.
+name: release-assets
+on:
+  release:
+    types:
+      - created
+
+permissions:
+  contents: write # Required to upload assets
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  GO_VERSION: stable
+  TAG_NAME: ${{ github.event.release.tag_name }}
+jobs:
+  build:
+    name: Upload Release Assets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Build artifacts
+        run: |
+          make release-assets
+
+      - name: Upload linux_amd64.tar.gz
+        if: hashFiles('linux_amd64.tar.gz') != ''
+        run: gh release upload "$TAG_NAME" linux_amd64.tar.gz --clobber
+
+      - name: Upload linux_amd64_dbg.tar.gz
+        if: hashFiles('linux_amd64_dbg.tar.gz') != ''
+        run: gh release upload "$TAG_NAME" linux_amd64_dbg.tar.gz --clobber
+
+      - name: Upload linux_arm64.tar.gz
+        if: hashFiles('linux_arm64.tar.gz') != ''
+        run: gh release upload "$TAG_NAME" linux_arm64.tar.gz --clobber
+
+      - name: Upload linux_arm.tar.gz
+        if: hashFiles('linux_arm.tar.gz') != ''
+        run: gh release upload "$TAG_NAME" linux_arm.tar.gz --clobber
+
+      - name: Upload darwin_amd64.tar.gz
+        if: hashFiles('darwin_amd64.tar.gz') != ''
+        run: gh release upload "$TAG_NAME" darwin_amd64.tar.gz --clobber
+
+      - name: Upload darwin_arm64.tar.gz
+        if: hashFiles('darwin_arm64.tar.gz') != ''
+        run: gh release upload "$TAG_NAME" darwin_arm64.tar.gz --clobber
+
+      - name: Upload windows_amd64.zip
+        if: hashFiles('windows_amd64.zip') != ''
+        run: gh release upload "$TAG_NAME" windows_amd64.zip --clobber
