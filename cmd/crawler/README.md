@@ -7,3 +7,7 @@
 ```
 ./crawler rgrr_replay_24.log.gz | gzip -c > rgrr_replay_24-result.log.gz
 ```
+
+```
+./crawler links.log.zst | gzip -c > rgrr_replay_24-result.log.gz
+```

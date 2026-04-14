@@ -142,7 +142,7 @@ func NewThrottle(options ...Option) *Throttle {
 	}
 
 	if t.cfg.LimitLatency != 0 {
-		t.latency = &dynhist.Collector{BucketsLimit: 50, WeightFunc: dynhist.ExpWidth(1.5, 1)}
+		t.latency = &dynhist.Collector{BucketsLimit: 300, WeightFunc: dynhist.ExpWidth(1.5, 1)}
 	}
 
 	done := make(chan struct{})
@@ -169,20 +169,21 @@ func NewThrottle(options ...Option) *Throttle {
 }
 
 // Go runs a concurrent job.
-func (t *Throttle) Go(f func() error) {
+func (t *Throttle) Go(f func() (passed bool)) {
 	t.Acquire()
 	go func() {
 		var (
-			s   = time.Now()
-			err error
+			s      = time.Now()
+			passed bool
 		)
 
 		defer func() {
-			t.Release(time.Since(s), err != nil)
 			if r := recover(); r != nil {
+				atomic.AddInt64(&t.failed, 1)
 			}
+			t.Release(time.Since(s), passed)
 		}()
-		err = f()
+		passed = f()
 	}()
 }
 
@@ -204,7 +205,7 @@ func (t *Throttle) Acquire() {
 }
 
 // Release returns permit back to the pool.
-func (t *Throttle) Release(elapsed time.Duration, failed bool) {
+func (t *Throttle) Release(elapsed time.Duration, passed bool) {
 	if t.sem != nil {
 		<-t.sem
 	}
@@ -212,7 +213,7 @@ func (t *Throttle) Release(elapsed time.Duration, failed bool) {
 	t.latency.Add(elapsed.Seconds())
 	atomic.AddInt64(&t.inProgress, -1)
 	atomic.AddInt64(&t.total, 1)
-	if failed {
+	if !passed {
 		atomic.AddInt64(&t.failed, 1)
 	}
 }
@@ -317,6 +318,10 @@ func (t *throttle) faster() {
 		active := t.cfg.MaxConcurrency - blocked
 		delta := int64(float64(active) * t.cfg.StepFracConcurrency)
 
+		if delta < 1 {
+			delta = 1
+		}
+
 		if active+delta >= t.cfg.MaxConcurrency {
 			delta = t.cfg.MaxConcurrency - active
 		}
@@ -380,18 +385,22 @@ func (t *Throttle) Latency(percent float64) float64 {
 	return t.latency.Percentile(percent)
 }
 
+// LatencyHistogram returns latency histogram collector.
 func (t *Throttle) LatencyHistogram() *dynhist.Collector {
 	return t.latency
 }
 
+// Concurrency returns the number of available slots in the semaphore.
 func (t *Throttle) Concurrency() int64 {
 	return t.cfg.MaxConcurrency - atomic.LoadInt64(&t.blocked)
 }
 
+// FailedPercent returns the fraction of failed operations of a healthy system, in percents.
 func (t *Throttle) FailedPercent() float64 {
 	return 100 * float64(atomic.LoadInt64(&t.failed)) / float64(atomic.LoadInt64(&t.total))
 }
 
+// WaitInProgress blocks until all operations in progress are finished.
 func (t *Throttle) WaitInProgress() {
 	if t.sem == nil {
 		return

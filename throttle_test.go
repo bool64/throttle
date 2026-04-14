@@ -1,7 +1,6 @@
 package throttle_test
 
 import (
-	"fmt"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -17,8 +16,7 @@ import (
 func TestSemaphor_Acquire(t *testing.T) {
 	var concurrency int64
 
-	var s *throttle.Throttle
-	s = throttle.NewThrottle(func(cfg *throttle.Config) {
+	s := throttle.NewThrottle(func(cfg *throttle.Config) {
 		cfg.Interval = 100 * time.Millisecond
 		cfg.StepFracConcurrency = 0.9
 		cfg.LimitLatencyPercentile = 93
@@ -29,7 +27,6 @@ func TestSemaphor_Acquire(t *testing.T) {
 		cfg.LimitLatency = 5 * time.Millisecond
 		cfg.ReceiveUpdate = func(grown bool, r rate.Limit, c int64) {
 			atomic.StoreInt64(&concurrency, c)
-			fmt.Println("UUU", grown, float64(r), c, s.Throughput())
 		}
 	})
 
@@ -42,7 +39,7 @@ func TestSemaphor_Acquire(t *testing.T) {
 		go func() {
 			defer func() { wg.Done() }()
 			time.Sleep(time.Millisecond)
-			s.Release(time.Millisecond)
+			s.Release(time.Millisecond, true)
 		}()
 	}
 
@@ -53,7 +50,7 @@ func TestSemaphor_Acquire(t *testing.T) {
 		go func() {
 			defer func() { wg.Done() }()
 			time.Sleep(10 * time.Millisecond)
-			s.Release(10 * time.Millisecond)
+			s.Release(10*time.Millisecond, true)
 		}()
 	}
 
@@ -72,7 +69,7 @@ func TestSemaphor_Acquire(t *testing.T) {
 		go func() {
 			defer func() { wg.Done() }()
 			time.Sleep(1 * time.Microsecond)
-			s.Release(1 * time.Microsecond)
+			s.Release(1*time.Microsecond, true)
 		}()
 	}
 
