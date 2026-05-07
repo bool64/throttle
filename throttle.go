@@ -210,7 +210,9 @@ func (t *Throttle) Release(elapsed time.Duration, passed bool) {
 		<-t.sem
 	}
 
-	t.latency.Add(elapsed.Seconds())
+	if t.latency != nil {
+		t.latency.Add(elapsed.Seconds())
+	}
 	atomic.AddInt64(&t.inProgress, -1)
 	atomic.AddInt64(&t.total, 1)
 	if !passed {
@@ -311,29 +313,27 @@ func (t *throttle) faster() {
 
 	if t.sem != nil {
 		blocked := atomic.LoadInt64(&t.blocked)
-		if blocked == 0 {
-			return
-		}
+		if blocked != 0 {
+			active := t.cfg.MaxConcurrency - blocked
+			delta := int64(float64(active) * t.cfg.StepFracConcurrency)
 
-		active := t.cfg.MaxConcurrency - blocked
-		delta := int64(float64(active) * t.cfg.StepFracConcurrency)
-
-		if delta < 1 {
-			delta = 1
-		}
-
-		if active+delta >= t.cfg.MaxConcurrency {
-			delta = t.cfg.MaxConcurrency - active
-		}
-
-		newConcurrency = active + delta
-
-		if delta != 0 {
-			for i := 0; i < int(delta); i++ {
-				<-t.sem
+			if delta < 1 {
+				delta = 1
 			}
 
-			atomic.AddInt64(&t.blocked, -delta)
+			if active+delta >= t.cfg.MaxConcurrency {
+				delta = t.cfg.MaxConcurrency - active
+			}
+
+			newConcurrency = active + delta
+
+			if delta != 0 {
+				for i := 0; i < int(delta); i++ {
+					<-t.sem
+				}
+
+				atomic.AddInt64(&t.blocked, -delta)
+			}
 		}
 	}
 
@@ -397,24 +397,38 @@ func (t *Throttle) Concurrency() int64 {
 
 // FailedPercent returns the fraction of failed operations of a healthy system, in percents.
 func (t *Throttle) FailedPercent() float64 {
-	return 100 * float64(atomic.LoadInt64(&t.failed)) / float64(atomic.LoadInt64(&t.total))
+	total := atomic.LoadInt64(&t.total)
+	if total == 0 {
+		return 0
+	}
+
+	return 100 * float64(atomic.LoadInt64(&t.failed)) / float64(total)
 }
 
 // WaitInProgress blocks until all operations in progress are finished.
 func (t *Throttle) WaitInProgress() {
-	if t.sem == nil {
-		return
-	}
+	for {
+		inProgress := t.InProgress()
+		if inProgress == 0 {
+			return
+		}
 
-	inProgress := t.InProgress()
+		if t.sem != nil {
+			// Fill the semaphore to wait for operations in progress.
+			for i := 0; i < int(inProgress); i++ {
+				t.sem <- struct{}{}
+			}
 
-	// Fill the semaphore to wait for operations in progress.
-	for i := 0; i < int(inProgress); i++ {
-		t.sem <- struct{}{}
-	}
+			// Release temporary filling.
+			for i := 0; i < int(inProgress); i++ {
+				<-t.sem
+			}
 
-	// Release temporary filling.
-	for i := 0; i < int(inProgress); i++ {
-		<-t.sem
+			if t.InProgress() == 0 {
+				return
+			}
+		} else {
+			time.Sleep(time.Millisecond)
+		}
 	}
 }

@@ -80,3 +80,69 @@ func TestSemaphor_Acquire(t *testing.T) {
 	runtime.GC()
 	runtime.GC()
 }
+
+func TestThrottle_ReleaseWithoutLatencyLimit(t *testing.T) {
+	s := throttle.NewThrottle(func(cfg *throttle.Config) {
+		cfg.MaxConcurrency = 1
+		cfg.MinConcurrency = 1
+		cfg.LimitLatency = 0
+	})
+
+	s.Acquire()
+	s.Release(time.Millisecond, true)
+
+	assert.Equal(t, int64(0), s.InProgress())
+	assert.Equal(t, 0.0, s.Latency(90))
+}
+
+func TestThrottle_WaitInProgressWithoutSemaphore(t *testing.T) {
+	s := throttle.NewThrottle(func(cfg *throttle.Config) {
+		cfg.MaxConcurrency = 0
+	})
+
+	s.Go(func() bool {
+		time.Sleep(20 * time.Millisecond)
+		return true
+	})
+
+	start := time.Now()
+	s.WaitInProgress()
+
+	assert.GreaterOrEqual(t, time.Since(start), 20*time.Millisecond)
+	assert.Equal(t, int64(0), s.InProgress())
+}
+
+func TestThrottle_RateCanGrowAtMaxConcurrency(t *testing.T) {
+	updates := make(chan rate.Limit, 4)
+
+	throttle.NewThrottle(func(cfg *throttle.Config) {
+		cfg.Interval = 10 * time.Millisecond
+		cfg.GrowthSkipCycles = 0
+		cfg.MaxConcurrency = 10
+		cfg.MinConcurrency = 10
+		cfg.InitialRate = 10
+		cfg.MinRate = 10
+		cfg.MaxRate = 20
+		cfg.StepFracRate = 0.5
+		cfg.ReceiveUpdate = func(grown bool, r rate.Limit, _ int64) {
+			if grown && r > 0 {
+				updates <- r
+			}
+		}
+	})
+
+	require.Eventually(t, func() bool {
+		select {
+		case v := <-updates:
+			return v > 10
+		default:
+			return false
+		}
+	}, 200*time.Millisecond, 10*time.Millisecond)
+}
+
+func TestThrottle_FailedPercentZeroTotal(t *testing.T) {
+	s := throttle.NewThrottle()
+
+	assert.Equal(t, 0.0, s.FailedPercent())
+}

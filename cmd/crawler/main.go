@@ -19,7 +19,7 @@ import (
 
 	"github.com/bool64/logz"
 	"github.com/bool64/progress"
-	throttle "github.com/bool64/throttle"
+	"github.com/bool64/throttle"
 	"github.com/klauspost/compress/zstd"
 	"github.com/valyala/fasthttp"
 	"github.com/vearutop/dynhist-go"

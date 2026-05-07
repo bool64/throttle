@@ -56,6 +56,8 @@ linters:
       max-complexity: 15
     funlen:
       lines: 70
+    nestif:
+      min-complexity: 8
   exclusions:
     generated: lax
     rules:

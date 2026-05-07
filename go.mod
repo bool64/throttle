@@ -6,9 +6,9 @@ require (
 	github.com/bool64/dev v0.2.45
 	github.com/bool64/logz v1.3.2
 	github.com/bool64/progress v0.3.23
-	github.com/klauspost/compress v1.18.5
+	github.com/klauspost/compress v1.18.6
 	github.com/stretchr/testify v1.11.1
-	github.com/valyala/fasthttp v1.70.0
+	github.com/valyala/fasthttp v1.71.0
 	github.com/vearutop/dynhist-go v1.2.3
 	golang.org/x/time v0.15.0
 )
