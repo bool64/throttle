@@ -55,6 +55,7 @@ func TestSemaphor_Acquire(t *testing.T) {
 		}()
 	}
 
+	time.Sleep(200 * time.Millisecond)
 	require.GreaterOrEqual(t, 10*time.Millisecond.Seconds(), s.Latency(90))
 	assert.Equal(t, int64(20), atomic.LoadInt64(&concurrency)) // Min concurrency.
 	println("now healthy")
