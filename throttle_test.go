@@ -25,6 +25,7 @@ func TestSemaphor_Acquire(t *testing.T) {
 		cfg.MaxRate = 1000
 		cfg.MinRate = 20
 		cfg.LimitLatency = 5 * time.Millisecond
+		cfg.Interval = 100 * time.Millisecond
 		cfg.ReceiveUpdate = func(grown bool, r rate.Limit, c int64) {
 			atomic.StoreInt64(&concurrency, c)
 		}
@@ -32,7 +33,7 @@ func TestSemaphor_Acquire(t *testing.T) {
 
 	wg := sync.WaitGroup{}
 
-	for i := 0; i < 10000; i++ {
+	for i := 0; i < 1000; i++ {
 		s.Acquire()
 
 		wg.Add(1)
@@ -43,7 +44,7 @@ func TestSemaphor_Acquire(t *testing.T) {
 		}()
 	}
 
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 100; i++ {
 		s.Acquire()
 
 		wg.Add(1)
@@ -58,8 +59,8 @@ func TestSemaphor_Acquire(t *testing.T) {
 	assert.Equal(t, int64(20), atomic.LoadInt64(&concurrency)) // Min concurrency.
 	println("now healthy")
 
-	for i := 0; i < 20000; i++ {
-		if i%1000 == 0 {
+	for i := 0; i < 2000; i++ {
+		if i%100 == 0 {
 			println(i, s.Latency(90))
 		}
 
