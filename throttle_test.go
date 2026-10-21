@@ -146,3 +146,32 @@ func TestThrottle_FailedPercentZeroTotal(t *testing.T) {
 
 	assert.Equal(t, 0.0, s.FailedPercent())
 }
+
+func TestThrottle_SetLimits(t *testing.T) {
+	th := throttle.NewThrottle(func(cfg *throttle.Config) {
+		cfg.Interval = time.Hour
+		cfg.MinConcurrency = 2
+		cfg.MaxConcurrency = 20
+		cfg.InitialConcurrency = 10
+		cfg.MinRate = 10
+		cfg.MaxRate = 100
+	})
+
+	assert.Equal(t, int64(10), th.Concurrency())
+
+	// Out of bounds.
+	require.ErrorIs(t, th.SetLimits(throttle.Limits{MinRate: 10, MaxRate: 100, MinConcurrency: 2, MaxConcurrency: 21}), throttle.ErrInvalidLimits)
+	require.ErrorIs(t, th.SetLimits(throttle.Limits{MinRate: 200, MaxRate: 100, MinConcurrency: 2, MaxConcurrency: 10}), throttle.ErrInvalidLimits)
+
+	// Lower the max, concurrency follows in background.
+	l := throttle.Limits{MinRate: 10, MaxRate: 100, MinConcurrency: 2, MaxConcurrency: 4}
+	require.NoError(t, th.SetLimits(l))
+	assert.Equal(t, l, th.Limits())
+	assert.Eventually(t, func() bool { return th.Concurrency() == 4 }, time.Second, time.Millisecond)
+
+	// Raise the min above current.
+	l.MinConcurrency = 6
+	l.MaxConcurrency = 20
+	require.NoError(t, th.SetLimits(l))
+	assert.Eventually(t, func() bool { return th.Concurrency() == 6 }, time.Second, time.Millisecond)
+}

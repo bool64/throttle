@@ -4,6 +4,8 @@ package throttle
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -80,8 +82,10 @@ type Throttle struct {
 }
 
 type throttle struct {
-	sem     chan struct{} // Semaphore channel for concurrency limit.
-	blocked int64         // Number of blocked slots in semaphore.
+	sem      chan struct{} // Semaphore channel for concurrency limit.
+	capacity int64         // Size of semaphore.
+	blocked  int64         // Number of blocked slots in semaphore.
+	adj      sync.Mutex    // Serializes concurrency adjustments.
 
 	latency    *dynhist.Collector // Latency histogram collector for percentile calculation.
 	hCycles    int64              // Number of healthy cycles passed since last perf adjustment.
@@ -121,13 +125,17 @@ func NewThrottle(options ...Option) *Throttle {
 	}
 
 	if t.cfg.MaxConcurrency != 0 {
-		t.sem = make(chan struct{}, t.cfg.MaxConcurrency)
+		t.capacity = t.cfg.MaxConcurrency
+		t.sem = make(chan struct{}, t.capacity)
 
-		if t.cfg.InitialConcurrency != 0 {
-			t.blocked = t.cfg.MaxConcurrency - t.cfg.InitialConcurrency
-			for i := 0; i < int(t.blocked); i++ {
-				t.sem <- struct{}{}
-			}
+		initial := t.cfg.InitialConcurrency
+		if initial == 0 {
+			initial = t.cfg.MaxConcurrency
+		}
+
+		t.blocked = t.capacity - initial
+		for i := 0; i < int(t.blocked); i++ {
+			t.sem <- struct{}{}
 		}
 	}
 
@@ -273,23 +281,21 @@ func (t *throttle) slower() {
 	newConcurrency := int64(0)
 
 	if t.sem != nil {
-		blocked := atomic.LoadInt64(&t.blocked)
-		active := t.cfg.MaxConcurrency - blocked
+		lim := t.limits()
+
+		t.adj.Lock()
+
+		active := t.capacity - atomic.LoadInt64(&t.blocked)
 		delta := int64(float64(active) * t.cfg.StepFracConcurrency)
 
-		if active-delta <= t.cfg.MinConcurrency {
-			delta = active - t.cfg.MinConcurrency
+		if active-delta <= lim.MinConcurrency {
+			delta = max(active-lim.MinConcurrency, 0)
 		}
 
 		newConcurrency = active - delta
 
-		if delta > 0 {
-			for i := 0; i < int(delta); i++ {
-				t.sem <- struct{}{}
-			}
-
-			atomic.AddInt64(&t.blocked, delta)
-		}
+		t.block(delta)
+		t.adj.Unlock()
 	}
 
 	if t.rlExists {
@@ -312,29 +318,24 @@ func (t *throttle) faster() {
 	newConcurrency := int64(0)
 
 	if t.sem != nil {
-		blocked := atomic.LoadInt64(&t.blocked)
-		if blocked != 0 {
-			active := t.cfg.MaxConcurrency - blocked
-			delta := int64(float64(active) * t.cfg.StepFracConcurrency)
+		lim := t.limits()
 
-			if delta < 1 {
-				delta = 1
-			}
+		t.adj.Lock()
 
-			if active+delta >= t.cfg.MaxConcurrency {
-				delta = t.cfg.MaxConcurrency - active
+		active := t.capacity - atomic.LoadInt64(&t.blocked)
+		if active < lim.MaxConcurrency {
+			delta := max(int64(float64(active)*t.cfg.StepFracConcurrency), 1)
+
+			if active+delta >= lim.MaxConcurrency {
+				delta = lim.MaxConcurrency - active
 			}
 
 			newConcurrency = active + delta
 
-			if delta != 0 {
-				for i := 0; i < int(delta); i++ {
-					<-t.sem
-				}
-
-				atomic.AddInt64(&t.blocked, -delta)
-			}
+			t.block(-delta)
 		}
+
+		t.adj.Unlock()
 	}
 
 	if t.rlExists {
@@ -343,6 +344,100 @@ func (t *throttle) faster() {
 
 	if t.cfg.ReceiveUpdate != nil {
 		t.cfg.ReceiveUpdate(true, newRate, newConcurrency)
+	}
+}
+
+// block removes delta slots from the active pool, negative delta returns slots back, t.adj must be held.
+func (t *throttle) block(delta int64) {
+	for i := int64(0); i < delta; i++ {
+		t.sem <- struct{}{}
+	}
+
+	for i := int64(0); i > delta; i-- {
+		<-t.sem
+	}
+
+	atomic.AddInt64(&t.blocked, delta)
+}
+
+// ErrInvalidLimits is returned by SetLimits for inconsistent or out of range limits.
+var ErrInvalidLimits = errors.New("invalid limits")
+
+// Limits are bounds of rate and concurrency that can be changed in runtime.
+type Limits struct {
+	MinRate        rate.Limit
+	MaxRate        rate.Limit
+	MinConcurrency int64
+	MaxConcurrency int64
+}
+
+// Limits returns current bounds.
+func (t *Throttle) Limits() Limits {
+	return t.limits()
+}
+
+func (t *throttle) limits() Limits {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	return Limits{
+		MinRate:        t.cfg.MinRate,
+		MaxRate:        t.cfg.MaxRate,
+		MinConcurrency: t.cfg.MinConcurrency,
+		MaxConcurrency: t.cfg.MaxConcurrency,
+	}
+}
+
+// SetLimits changes bounds of rate and concurrency, current rate is clamped immediately.
+//
+// Concurrency is adjusted in background, as removing slots has to wait for operations in progress to finish.
+// MaxConcurrency can not exceed the value of Config.MaxConcurrency that Throttle was created with.
+// Rate bounds are ignored if rate limiting was not enabled with Config.MaxRate.
+func (t *Throttle) SetLimits(l Limits) error {
+	if t.sem != nil && (l.MinConcurrency < 0 || l.MinConcurrency > l.MaxConcurrency || l.MaxConcurrency > t.capacity) {
+		return fmt.Errorf("%w: concurrency want 0 <= min <= max <= %d, got min %d, max %d",
+			ErrInvalidLimits, t.capacity, l.MinConcurrency, l.MaxConcurrency)
+	}
+
+	if t.rlExists && (l.MinRate <= 0 || l.MinRate > l.MaxRate) {
+		return fmt.Errorf("%w: rate want 0 < min <= max, got min %v, max %v", ErrInvalidLimits, l.MinRate, l.MaxRate)
+	}
+
+	t.mu.Lock()
+
+	if t.sem != nil {
+		t.cfg.MinConcurrency, t.cfg.MaxConcurrency = l.MinConcurrency, l.MaxConcurrency
+	}
+
+	if t.rlExists {
+		t.cfg.MinRate, t.cfg.MaxRate = l.MinRate, l.MaxRate
+
+		if cur := t.rl.Limit(); cur > l.MaxRate || cur < l.MinRate {
+			t.rl = rate.NewLimiter(min(max(cur, l.MinRate), l.MaxRate), 1)
+		}
+	}
+
+	t.mu.Unlock()
+
+	if t.sem != nil {
+		go t.enforceConcurrency(l)
+	}
+
+	return nil
+}
+
+// enforceConcurrency brings active concurrency in bounds.
+func (t *throttle) enforceConcurrency(l Limits) {
+	t.adj.Lock()
+	defer t.adj.Unlock()
+
+	active := t.capacity - atomic.LoadInt64(&t.blocked)
+
+	switch {
+	case active > l.MaxConcurrency:
+		t.block(active - l.MaxConcurrency)
+	case active < l.MinConcurrency:
+		t.block(active - l.MinConcurrency)
 	}
 }
 
@@ -392,7 +487,7 @@ func (t *Throttle) LatencyHistogram() *dynhist.Collector {
 
 // Concurrency returns the number of available slots in the semaphore.
 func (t *Throttle) Concurrency() int64 {
-	return t.cfg.MaxConcurrency - atomic.LoadInt64(&t.blocked)
+	return t.capacity - atomic.LoadInt64(&t.blocked)
 }
 
 // FailedPercent returns the fraction of failed operations of a healthy system, in percents.
