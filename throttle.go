@@ -4,6 +4,7 @@ package throttle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
 	"sync"
@@ -359,6 +360,9 @@ func (t *throttle) block(delta int64) {
 	atomic.AddInt64(&t.blocked, delta)
 }
 
+// ErrInvalidLimits is returned by SetLimits for inconsistent or out of range limits.
+var ErrInvalidLimits = errors.New("invalid limits")
+
 // Limits are bounds of rate and concurrency that can be changed in runtime.
 type Limits struct {
 	MinRate        rate.Limit
@@ -391,12 +395,12 @@ func (t *throttle) limits() Limits {
 // Rate bounds are ignored if rate limiting was not enabled with Config.MaxRate.
 func (t *Throttle) SetLimits(l Limits) error {
 	if t.sem != nil && (l.MinConcurrency < 0 || l.MinConcurrency > l.MaxConcurrency || l.MaxConcurrency > t.capacity) {
-		return fmt.Errorf("invalid concurrency limits: want 0 <= min <= max <= %d, got min %d, max %d",
-			t.capacity, l.MinConcurrency, l.MaxConcurrency)
+		return fmt.Errorf("%w: concurrency want 0 <= min <= max <= %d, got min %d, max %d",
+			ErrInvalidLimits, t.capacity, l.MinConcurrency, l.MaxConcurrency)
 	}
 
 	if t.rlExists && (l.MinRate <= 0 || l.MinRate > l.MaxRate) {
-		return fmt.Errorf("invalid rate limits: want 0 < min <= max, got min %v, max %v", l.MinRate, l.MaxRate)
+		return fmt.Errorf("%w: rate want 0 < min <= max, got min %v, max %v", ErrInvalidLimits, l.MinRate, l.MaxRate)
 	}
 
 	t.mu.Lock()

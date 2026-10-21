@@ -160,8 +160,8 @@ func TestThrottle_SetLimits(t *testing.T) {
 	assert.Equal(t, int64(10), th.Concurrency())
 
 	// Out of bounds.
-	require.Error(t, th.SetLimits(throttle.Limits{MinRate: 10, MaxRate: 100, MinConcurrency: 2, MaxConcurrency: 21}))
-	require.Error(t, th.SetLimits(throttle.Limits{MinRate: 200, MaxRate: 100, MinConcurrency: 2, MaxConcurrency: 10}))
+	require.ErrorIs(t, th.SetLimits(throttle.Limits{MinRate: 10, MaxRate: 100, MinConcurrency: 2, MaxConcurrency: 21}), throttle.ErrInvalidLimits)
+	require.ErrorIs(t, th.SetLimits(throttle.Limits{MinRate: 200, MaxRate: 100, MinConcurrency: 2, MaxConcurrency: 10}), throttle.ErrInvalidLimits)
 
 	// Lower the max, concurrency follows in background.
 	l := throttle.Limits{MinRate: 10, MaxRate: 100, MinConcurrency: 2, MaxConcurrency: 4}
