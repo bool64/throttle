@@ -146,7 +146,7 @@ func NewThrottle(options ...Option) *Throttle {
 			t.cfg.InitialRate = t.cfg.MaxRate
 		}
 
-		t.rl = rate.NewLimiter(t.cfg.InitialRate, 1)
+		t.rl = newLimiter(t.cfg.InitialRate)
 	}
 
 	if t.cfg.LimitLatency != 0 {
@@ -347,6 +347,18 @@ func (t *throttle) faster() {
 	}
 }
 
+// burstWindow is the duration of rate limiter burst, it has to cover timer wake-up lag.
+//
+// With burst of 1, any late wake-up of a waiting goroutine loses the time exceeding one token, so on hosts with
+// coarse timers (about 1ms is common on busy VMs) throughput is bounded by roughly 2/lag, e.g. 2000 per second,
+// whatever the rate limit is. Burst of limit*lag lets the limiter catch up.
+const burstWindow = 5 * time.Millisecond
+
+// newLimiter creates a rate limiter allowing short bursts, at least 1.
+func newLimiter(lim rate.Limit) *rate.Limiter {
+	return rate.NewLimiter(lim, max(1, int(float64(lim)*burstWindow.Seconds())))
+}
+
 // block removes delta slots from the active pool, negative delta returns slots back, t.adj must be held.
 func (t *throttle) block(delta int64) {
 	for i := int64(0); i < delta; i++ {
@@ -413,7 +425,7 @@ func (t *Throttle) SetLimits(l Limits) error {
 		t.cfg.MinRate, t.cfg.MaxRate = l.MinRate, l.MaxRate
 
 		if cur := t.rl.Limit(); cur > l.MaxRate || cur < l.MinRate {
-			t.rl = rate.NewLimiter(min(max(cur, l.MinRate), l.MaxRate), 1)
+			t.rl = newLimiter(min(max(cur, l.MinRate), l.MaxRate))
 		}
 	}
 
@@ -460,7 +472,7 @@ func (t *throttle) updateRateLimiter(slower bool) rate.Limit {
 	}
 
 	if newLim != lim {
-		t.rl = rate.NewLimiter(newLim, 1)
+		t.rl = newLimiter(newLim)
 	}
 
 	return newLim
