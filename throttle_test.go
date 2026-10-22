@@ -175,3 +175,10 @@ func TestThrottle_SetLimits(t *testing.T) {
 	require.NoError(t, th.SetLimits(l))
 	assert.Eventually(t, func() bool { return th.Concurrency() == 6 }, time.Second, time.Millisecond)
 }
+
+func TestNewLimiter_burst(t *testing.T) {
+	assert.Equal(t, 1, throttle.NewLimiter(1).Burst())
+	assert.Equal(t, 1, throttle.NewLimiter(100).Burst())
+	assert.Equal(t, 25, throttle.NewLimiter(5000).Burst())
+	assert.Equal(t, 250, throttle.NewLimiter(50000).Burst())
+}
